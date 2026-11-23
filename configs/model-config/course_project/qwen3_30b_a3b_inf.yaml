@@ -29,3 +29,8 @@ model_param:
     n_shared_experts: 0               # always-on shared experts
     moe_layer_freq: 1                 # every Nth layer is an MoE layer
     first_k_dense_replace: 0          # the first k layers are dense
+
+project_param:                        # Project 1 (AFD), decode only
+  afd_side: "both"                    # both, attention, ffn, no_overlap or overlap
+  afd_link_bw_GBps: 100               # attention<->FFN link bandwidth (GB/s)
+  afd_link_latency_us: 5              # latency per transfer (µs)

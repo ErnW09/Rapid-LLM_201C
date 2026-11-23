@@ -545,11 +545,28 @@ class TimeCalculationLLMInference(TimeCalculationLLM):
             + layernorm2_forward
             + layernorm2_reduction
         )
+        linear_softmax_forward = transformer_timings["linear_softmax"].total_forward_time()
+        # Project 1 (AFD): project_param.afd_side = both | attention | ffn | no_overlap | overlap
+        side = self.project_param.get("afd_side", "both")
+        if side != "both":
+            attn_f = mha_forward + layernorm1_forward + layernorm1_reduction
+            ffn_f = mlp_forward + layernorm2_forward + layernorm2_reduction
+            bw = self.project_param.get("afd_link_bw_GBps", 100) * 1e9
+            lat = self.project_param.get("afd_link_latency_us", 5) * 1e-6
+            xfer_f = 2 * (lat + batch_size * self.hidden_dim * self.precision.activations / bw)
+            transformer_forward = {
+                "attention": attn_f,
+                "ffn": ffn_f,
+                "no_overlap": attn_f + xfer_f + ffn_f,
+                "overlap": max(attn_f, xfer_f, ffn_f),
+            }[side]
+            if side == "ffn":
+                linear_softmax_forward = 0.0  # output head lives on the attention GPU
 
         node_breakdown = {
             "transformer_time_f": transformer_forward,
             "transformer_time_b": 0.0,
-            "linear_softmax_f": transformer_timings["linear_softmax"].total_forward_time(),
+            "linear_softmax_f": linear_softmax_forward,
             "linear_softmax_b": 0.0,
             "embedding_f": 0.0,
             "embedding_b": 0.0,
