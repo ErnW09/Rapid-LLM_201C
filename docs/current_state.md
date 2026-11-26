@@ -37,11 +37,13 @@ project_param:
 | `both` (default) | Unchanged single-GPU time | kept |
 | `attention` | MHA + layernorm1 (+ its reduction) | kept |
 | `ffn` | MLP (incl. MoE router, dispatch, combine) + layernorm2 (+ its reduction) | **0**, because the head sits on the attention GPU |
-| `no_overlap` | attention + transfer + FFN | kept, added after the layers |
-| `overlap` | max(attention, transfer, FFN) | kept, added after the layers |
+| `no_overlap` | unsplit layer time + 2·tc (attention, send, FFN, send back) | kept, added after the layers |
+| `overlap` | max(attention, FFN, tc) | kept, added after the layers |
 
-The transfer term is `2 × (latency + B × H × bytes_per_activation / bandwidth)`, which is one round
-trip of the hidden state per layer.
+`tc = latency + B × H × bytes_per_activation / bandwidth` is the **one-way** transfer of the hidden
+state. No-overlap pays it twice per layer. Overlap counts it once, because each link direction is
+its own stage (see Decisions). `no_overlap` adds 2·tc to the unsplit layer time rather than summing
+the two sides, so that a free link (latency 0, infinite bandwidth) reproduces `both` exactly.
 
 ### Check run (2026-11-25)
 
@@ -67,6 +69,16 @@ ran without errors.
 Peak memory on one GPU (baseline): prefill 81.42 GiB (**1.42 GiB over the 80 GiB A100**), decode
 63.63 GiB. Every mode reports the same memory, because the switch changes only timing.
 
+## Decisions
+
+- **Overlap uses the one-way transfer: max(tA, tF, tc) (2026-11-25).** This follows the course
+  slides (`docs/given/ECE201C_RAPID_LLM_Project_Options_v10.pdf`, "What exactly should the team
+  implement?"). The link is taken as full duplex, with 100 GB/s in each direction, so the A→F and
+  F→A transfers of different micro-batches run at the same time. A shared (half-duplex) link would
+  make it max(tA, tF, 2·tc). Neither changes any result here: at B = 32, tc ≈ 6 µs per layer while
+  tF ≈ 2,970 µs. Verified at B = 32 / output 256: `no_overlap` 153.0 ms and `overlap` 142.9 ms per
+  step, the same as before the change. `no_overlap` with a free link matches `both` exactly.
+
 ## Things to know when interpreting results
 
 - **Decode is FFN-bound.** The FFN is about 93% of the step at B = 32. About 75% of the FFN time
@@ -75,9 +87,11 @@ Peak memory on one GPU (baseline): prefill 81.42 GiB (**1.42 GiB over the 80 GiB
   time, launch overhead included, by the expert count. As a result, `overlap` ≈ `ffn`, and AFD's
   speedup over single-GPU is small (~6%). The report should flag that this is partly a modeling
   artifact.
-- **Overlap mode counts the round trip as one stage.** The transfer inside the `max` is both
-  directions together. PROJECTS.md says "the slowest of the three", so this reading is defensible,
-  but the report should say so.
+- **Overlap is an upper bound.** Overlap needs micro-batches. With m micro-batches of size
+  b = B/m, a layer takes max(tA(b) + 2·tc(b) + tF(b), m · max(tA(b), tF(b), tc(b))). The overlap
+  formula is the limit where stage times shrink in proportion to b. Our FFN time barely changes
+  with batch (142.5 ms at B = 16 vs 142.6 ms at B = 32), so m = 2 would nearly double the step.
+  The report should say this. Case study C5 will quantify it.
 - **Output head placement.** In `overlap` and `no_overlap`, the output head runs serially after the
   layers, on the attention GPU.
 - **Transfer size ignores `query_tokens`.** It uses `batch_size × hidden_dim`, which is fine for

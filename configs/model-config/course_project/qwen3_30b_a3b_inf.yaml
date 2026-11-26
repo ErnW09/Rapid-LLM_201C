@@ -32,5 +32,5 @@ model_param:
 
 project_param:                        # Project 1 (AFD), decode only
   afd_side: "both"                    # both, attention, ffn, no_overlap or overlap
-  afd_link_bw_GBps: 100               # attention<->FFN link bandwidth (GB/s)
+  afd_link_bw_GBps: 100               # attention<->FFN link bandwidth (GB/s, each direction)
   afd_link_latency_us: 5              # latency per transfer (µs)
