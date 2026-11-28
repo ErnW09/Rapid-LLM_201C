@@ -63,12 +63,12 @@ Time per decode step:
 
 | # | Item | Why |
 |---|---|---|
-| P1 | Overlap uses one-way `tc` | Matches the slides. The number barely moves at B = 32, but it matters in the link sweep (C3). |
-| P2 | `no_overlap` = original layer time + 2·`tc` | With a free link it is then exactly `both`, which passes the neutral check. Today it adds the terms in a different order. |
+| P1 | **Done (`f3149f2`).** Overlap uses one-way `tc` | Matches the slides. The number barely moves at B = 32, but it matters in the link sweep (C3). |
+| P2 | **Done (`f3149f2`).** `no_overlap` = original layer time + 2·`tc` | With a free link it is exactly `both` (verified), which passes the neutral check. |
 | P3 | Per-side memory and largest batch | Designed in [proposed_memory.md](proposed_memory.md). Every case study needs B_max. |
 | P4 | Print an AFD breakdown line | At each sampled decode step, print `tA`, `tF`, one-way `tc` and `h` (per layer). Then a script can compose C3 to C7 without re-running the simulator. |
 | P5 | Sweep driver `afd_sweep.py` | Already proposed in proposed_memory.md. Extend it to take a grid (model, hardware, B, S, O, `afd_side`, switches) and append one CSV row per run under `results/`. A run takes about 1.6 s, so grids of hundreds of runs are fine. |
-| P6 | Realism switches (if approved, see Decisions) | Two `project_param` switches, off by default: (a) charge the kernel launch once per grouped expert GEMM instead of once per expert; (b) price only the experts that receive tokens, E·(1 − (1 − k/E)^B). See V2. |
+| P6 | **Done.** Realism switches `moe_single_launch` and `moe_active_experts`, off by default | (a) charge the kernel launch once per grouped expert GEMM instead of once per expert; (b) price only the experts that receive tokens, E·(1 − (1 − k/E)^B). Why and measured effects: [moe_realism_switches.md](moe_realism_switches.md). See V2. |
 | P7 | Last-token prefill logits (if approved) | Prefill builds logits for every prompt token: 0.58 GiB per sequence at S = 2048 and 9.27 GiB at S = 32K. That limits the prefill batch and breaks C7. Add a `project_param` switch, off by default. |
 | P8 | Tests | The neutral check (P2), attention + FFN = both, no-overlap − both = 2L·`tc`, and the memory checks listed in proposed_memory.md. |
 
@@ -302,8 +302,8 @@ Suggested order:
 
 1. **Realism switches (P6).** Add them and report stock and realism side by side? Without them, the
    only finding is that the FFN is launch-bound, and validation (V2) will fail on the baseline.
-   *Proposed: yes, off by default.*
-2. **Overlap formula.** Use the slides' one-way `tc` (P1)? *Proposed: yes.*
+   **Decided: yes, both, off by default. Implemented (P6).**
+2. **Overlap formula.** Use the slides' one-way `tc` (P1)? **Decided: yes. Implemented in `f3149f2`.**
 3. **Comparison basis.** Same GPU count, each system at its largest batch that fits, tok/s per GPU?
    *Proposed: yes.*
 4. **Prefill logits (P7).** Add a last-token-only switch for case studies, and keep the stock

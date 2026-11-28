@@ -2284,6 +2284,27 @@ class TimeCalculationLLM(TimeCalculation):
                 comm_time = fused_time
         return per_time * scale, comm_time, comm_bytes
 
+    def _moe_active_experts(self, tokens_owner: int, experts_per_rank: int) -> Tuple[int, int]:
+        """Project 1 switch ``project_param.moe_active_experts``.
+
+        With uniform random top-k routing, one token misses a given expert with
+        probability 1 - k/E, so n tokens touch E * (1 - (1 - k/E)**n) distinct
+        experts on average. Returns (active experts, routed tokens per active
+        expert rounded up). Supported only when one GPU holds every expert.
+        """
+        num_experts = int(self.moe_num_experts)
+        top_k = int(self.moe_top_k)
+        if int(experts_per_rank) != num_experts:
+            raise NotImplementedError(
+                "project_param.moe_active_experts needs one GPU holding every expert "
+                f"(experts_per_rank={experts_per_rank}, num_experts={num_experts})."
+            )
+        tokens = int(tokens_owner)
+        routed = tokens * top_k
+        expected = num_experts * (1.0 - (1.0 - top_k / num_experts) ** tokens)
+        active = max(1, min(num_experts, routed, int(round(expected))))
+        return active, -(-routed // active)
+
     def get_moe_ffn_f(
         self,
         gemm,
@@ -2306,16 +2327,29 @@ class TimeCalculationLLM(TimeCalculation):
         ) = self._moe_balanced_routed_tokens_per_expert(batch_size, seq_len, allow_padding=allow_padding)
         tokens_shared = self._moe_tokens_shared(tokens_owner)
 
+        # Project 1 realism switches (project_param, both off by default; forward pass only).
+        # moe_active_experts: price only the experts the batch is expected to touch, instead of
+        #   padding the routed tokens so that every expert gets at least one.
+        # moe_single_launch: one kernel launch per grouped expert GEMM (fused MoE), instead of
+        #   one launch per expert.
+        if self.project_param.get("moe_active_experts", False):
+            experts_per_rank, tokens_per_expert_balanced = self._moe_active_experts(
+                tokens_owner, experts_per_rank
+            )
+        single_launch = bool(self.project_param.get("moe_single_launch", False))
+
         use_tp_sharded = bool(getattr(self, "tp_ep", True))
         gemm_time = 0.0
         tp_comm_time = 0.0
         tp_comm_bytes = 0
         total_flops = 0.0
         mem_accesses_total: Dict[str, float] = {}
+        routed_launches = 0  # each expert GEMM priced below carries one kernel launch (self.O)
         for bucket_batch, bucket_tokens_per_expert, bucket_label in self._moe_routed_compute_buckets(
             tokens_per_expert_balanced,
             experts_per_rank,
         ):
+            routed_launches += int(bucket_batch)
             m_per_expert = bucket_tokens_per_expert * max(1, int(self.cp))
             gemm_override = (bucket_batch, m_per_expert, k, n)
             bucket_name = name if bucket_label == "uniform" else f"{name}_{bucket_label}"
@@ -2336,6 +2370,9 @@ class TimeCalculationLLM(TimeCalculation):
             tp_comm_bytes += bucket_tp_comm_bytes
             total_flops += bucket_total_flops
             mem_accesses_total = self._combine_mem(mem_accesses_total, bucket_mem_accesses)
+        if single_launch and routed_launches > 1:
+            # Fused MoE: all routed experts run in one grouped kernel, so keep one launch.
+            gemm_time -= (routed_launches - 1) * self.O
 
         if tokens_shared > 0:
             shared_m = tokens_owner * max(1, int(self.cp))
@@ -2353,6 +2390,8 @@ class TimeCalculationLLM(TimeCalculation):
                 gemm_type=gemm_type,
                 use_tp=use_tp_sharded,
             )
+            if single_launch and int(self.n_shared_experts) > 1:
+                shared_gemm_time -= (int(self.n_shared_experts) - 1) * self.O
             gemm_time += shared_gemm_time
             tp_comm_time += shared_comm_time
             tp_comm_bytes += shared_comm_bytes

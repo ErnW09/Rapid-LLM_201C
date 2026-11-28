@@ -1,6 +1,7 @@
 # Project 1 (AFD): current state
 
-As of 2026-11-25, branch `proj_imp` at `183b404`.
+As of 2026-11-25, branch `proj_imp`. The plan for results and case studies is in
+[proposed_studies.md](proposed_studies.md).
 
 The assignment is in [PROJECTS.md](../PROJECTS.md#project-1-attentionffn-disaggregation-afd), and
 the code pointers are in [COURSE_README.md](../COURSE_README.md#project-1-attentionffn-disaggregation-qwen3-30b-a3b).
@@ -78,15 +79,23 @@ Peak memory on one GPU (baseline): prefill 81.42 GiB (**1.42 GiB over the 80 GiB
   make it max(tA, tF, 2·tc). Neither changes any result here: at B = 32, tc ≈ 6 µs per layer while
   tF ≈ 2,970 µs. Verified at B = 32 / output 256: `no_overlap` 153.0 ms and `overlap` 142.9 ms per
   step, the same as before the change. `no_overlap` with a free link matches `both` exactly.
+- **MoE realism switches, both off by default (2026-11-25).** `project_param.moe_single_launch`
+  charges one kernel launch per grouped expert GEMM instead of one per expert.
+  `project_param.moe_active_experts` prices only the E·(1 − (1 − k/E)^tokens) experts the batch is
+  expected to touch, instead of all 128. The required evaluation uses the stock simulator. The same
+  tables, plus validation and case studies, also get the switched-on numbers. Why, and measured
+  effects: [moe_realism_switches.md](moe_realism_switches.md). Tests:
+  `tests/test_afd_moe_switches.py`. With both on at B = 32: one GPU 39.2 ms per step, FFN side
+  29.3 ms, attention side 9.9 ms, overlap 29.6 ms.
 
 ## Things to know when interpreting results
 
-- **Decode is FFN-bound.** The FFN is about 93% of the step at B = 32. About 75% of the FFN time
-  is kernel-launch overhead: 9 µs (`kernel_launch_overhead` in the hardware YAML) × 128 experts ×
-  2 GEMMs per layer. `_batched_gemm_forward_compute` (train_timing.py) multiplies the per-expert
-  time, launch overhead included, by the expert count. As a result, `overlap` ≈ `ffn`, and AFD's
-  speedup over single-GPU is small (~6%). The report should flag that this is partly a modeling
-  artifact.
+- **Decode is FFN-bound (stock).** The FFN is about 93% of the step at B = 32. About 75% of the FFN
+  time is kernel-launch overhead: 9 µs (`kernel_launch_overhead` in the hardware YAML) × 128
+  experts × 2 GEMMs per layer. `_batched_gemm_forward_compute` (train_timing.py) multiplies the
+  per-expert time, launch overhead included, by the expert count. As a result, `overlap` ≈ `ffn`,
+  and AFD's speedup over single-GPU is small (~6%). This is mostly a modeling artifact. With both
+  realism switches on, the FFN is 75% of the step and overlap saves 25%.
 - **Overlap is an upper bound.** Overlap needs micro-batches. With m micro-batches of size
   b = B/m, a layer takes max(tA(b) + 2·tc(b) + tF(b), m · max(tA(b), tF(b), tc(b))). The overlap
   formula is the limit where stage times shrink in proportion to b. Our FFN time barely changes
@@ -138,9 +147,8 @@ Peak memory on one GPU (baseline): prefill 81.42 GiB (**1.42 GiB over the 80 GiB
   stops being FFN-bound.
 - [ ] **Sweep context length.** Attention and KV grow with context, but the FFN doesn't.
 - [ ] **Sweep link bandwidth and latency.** Find when the transfer becomes the bottleneck.
-- [ ] **Sensitivity to kernel-launch overhead.** Use a model-YAML-side workaround, since the
-  hardware configs must not be edited. This would separate the launch artifact from real
-  weight-read cost.
+- [x] **Sensitivity to kernel-launch overhead.** Done with the MoE realism switches (see
+  Decisions). Run every case study with them off and on.
 - [ ] **Optional: another model or hardware**, for example a model with fewer, larger experts.
 
 ### Housekeeping

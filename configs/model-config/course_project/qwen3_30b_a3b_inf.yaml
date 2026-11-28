@@ -30,7 +30,9 @@ model_param:
     moe_layer_freq: 1                 # every Nth layer is an MoE layer
     first_k_dense_replace: 0          # the first k layers are dense
 
-project_param:                        # Project 1 (AFD), decode only
-  afd_side: "both"                    # both, attention, ffn, no_overlap or overlap
+project_param:                        # Project 1 (AFD)
+  afd_side: "both"                    # decode only: both, attention, ffn, no_overlap or overlap
   afd_link_bw_GBps: 100               # attention<->FFN link bandwidth (GB/s, each direction)
   afd_link_latency_us: 5              # latency per transfer (µs)
+  moe_single_launch: false            # true: one launch per grouped expert GEMM (fused MoE), not one per expert
+  moe_active_experts: false           # true: price only the experts the batch touches, E·(1 − (1 − k/E)^tokens)
